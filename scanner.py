@@ -4,9 +4,9 @@ import re
 import pandas as pd
 from io import BytesIO
 
-st.set_page_config(page_title="Exam Schedule Builder (Fixed)", layout="wide")
-st.title("📋 Exam Schedule Builder – Enhanced Debugging")
-st.markdown("Upload **Date Sheet PDF** and **Roll List PDF**. If extraction fails, expand the debug sections to see raw text.")
+st.set_page_config(page_title="Exam Schedule", layout="wide")
+st.title("📋 Exam Schedule")
+# st.markdown("Upload **Date Sheet PDF** and **Roll List PDF**. If extraction fails, expand the debug sections to see raw text.")
 
 # ------------------------------------------------------------
 # 1. Parse Date Sheet (line‑by‑line, robust)
@@ -213,7 +213,7 @@ col1, col2 = st.columns(2)
 with col1:
     date_file = st.file_uploader("📅 Date Sheet PDF", type="pdf", key="date")
 with col2:
-    roll_file = st.file_uploader("🧑‍🎓 Roll List PDF", type="pdf", key="roll")
+    roll_file = st.file_uploader("🧑‍🎓 Confidential List / Roll List PDF", type="pdf", key="roll")
 
 if date_file and roll_file:
     with st.spinner("🔍 Parsing PDFs..."):
@@ -255,7 +255,7 @@ if date_file and roll_file:
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='Schedule')
         output.seek(0)
-        st.download_button("📥 Download Excel", data=output,
+        st.download_button("📥 Download in Excel", data=output,
                            file_name="exam_schedule.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     else:
