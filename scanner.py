@@ -4,9 +4,9 @@ import re
 import pandas as pd
 from io import BytesIO
 
-st.set_page_config(page_title="Exam Schedule Builder (Fixed)", layout="wide")
-st.title("📋 Exam Schedule Builder – Enhanced Debugging")
-st.markdown("Upload **Date Sheet PDF** and **Roll List PDF**. If extraction fails, expand the debug sections to see raw text.")
+st.set_page_config(page_title="Exam Schedule Builder – Fixed Name Extraction", layout="wide")
+st.title("📋 Exam Schedule Builder – Fixed Name Extraction")
+st.markdown("Upload **Date Sheet PDF** and **Roll List PDF**. If extraction fails, expand the debug sections.")
 
 # ------------------------------------------------------------
 # 1. Parse Date Sheet (line‑by‑line, robust)
@@ -62,14 +62,15 @@ def parse_date_sheet(pdf_file):
     return exam_map
 
 # ------------------------------------------------------------
-# 2. Parse Roll List (table + text fallback + brute force)
+# 2. Parse Roll List – Fixed Name Extraction
 # ------------------------------------------------------------
-def parse_roll_list(pdf_file, force_text=False):
+def parse_roll_list(pdf_file):
     students = []
-    paper_id_pattern = re.compile(r'\b(\d{5})\b')
-    roll_pattern = re.compile(r'\b(\d{9,})\b')   # roll numbers are at least 9 digits
+    paper_id_pattern = re.compile(r'\b(\d{5})\b')   # 5-digit paper IDs
+    roll_pattern = re.compile(r'Roll\s*No\.?\s*(\d+)', re.IGNORECASE)
+    reg_pattern = re.compile(r'Registration\s*No\.?\s*(\d+)', re.IGNORECASE)
 
-    # Extract all text first (for debugging and fallback)
+    # Extract full text
     with pdfplumber.open(pdf_file) as pdf:
         full_text = ""
         for page in pdf.pages:
@@ -77,102 +78,71 @@ def parse_roll_list(pdf_file, force_text=False):
             if text:
                 full_text += text + "\n"
 
-    # Try table extraction unless forced to text mode
-    if not force_text:
-        with pdfplumber.open(pdf_file) as pdf:
-            for page in pdf.pages:
-                tables = page.extract_tables()
-                for table in tables:
-                    for row in table:
-                        if not row:
-                            continue
-                        row_str = " ".join([str(c) for c in row if c])
-                        # Look for a roll number (long digit string)
-                        roll_match = roll_pattern.search(row_str)
-                        if not roll_match:
-                            continue
-                        roll_no = roll_match.group(1)
+    # Split by "Roll No" to get student blocks
+    # We use a lookahead to keep the delimiter
+    blocks = re.split(r'(Roll\s*No\.?\s*\d+)', full_text, flags=re.IGNORECASE)
+    # blocks[0] is preamble, then each pair: delimiter+number, rest of block
+    for i in range(1, len(blocks), 2):
+        header = blocks[i]                 # e.g., "Roll No 251114511001"
+        body = blocks[i+1] if i+1 < len(blocks) else ""
 
-                        # Try to get name from columns
-                        name = ""
-                        for cell in row:
-                            cell_str = str(cell) if cell else ""
-                            if cell_str and not roll_pattern.search(cell_str) and len(cell_str) > 2:
-                                name = cell_str.strip()
-                                break
-                        if not name:
-                            name = "UNKNOWN"
+        # Extract roll number from header
+        roll_match = roll_pattern.search(header)
+        if not roll_match:
+            continue
+        roll_no = roll_match.group(1)
 
-                        paper_ids = paper_id_pattern.findall(row_str)
-                        paper_ids = list(dict.fromkeys(paper_ids))
-
-                        if paper_ids:
-                            students.append({
-                                'roll_no': roll_no,
-                                'student_name': name,
-                                'paper_ids': paper_ids
-                            })
-
-    # If no students found via tables, use text chunking
-    if not students:
-        st.info("Table extraction gave no results – using text chunking.")
-        # Split by "Roll No"
-        chunks = re.split(r'(Roll\s*No\.?\s*)', full_text, flags=re.IGNORECASE)
-        for i in range(1, len(chunks), 2):
-            block = chunks[i] + chunks[i+1] if i+1 < len(chunks) else chunks[i]
-
-            roll_match = roll_pattern.search(block)
-            if not roll_match:
-                continue
-            roll_no = roll_match.group(1)
-
-            # Extract name: look for "Name" field
-            name_match = re.search(r'Name\s+([A-Z\s]+?)\s+(Father|SUBJECTS|Roll|$)', block, re.IGNORECASE)
-            if name_match:
-                student_name = name_match.group(1).strip()
+        # Find registration number line in body
+        reg_match = reg_pattern.search(body)
+        if reg_match:
+            # Registration number found, now we need to locate the name
+            # The name is usually the line immediately after the registration number line
+            lines = body.split('\n')
+            reg_line_idx = None
+            for idx, line in enumerate(lines):
+                if reg_pattern.search(line):
+                    reg_line_idx = idx
+                    break
+            if reg_line_idx is not None and reg_line_idx + 1 < len(lines):
+                # Next non-empty line after registration line is student name
+                for offset in range(1, 5):
+                    if reg_line_idx + offset < len(lines):
+                        candidate = lines[reg_line_idx + offset].strip()
+                        if candidate and not re.search(r'\d', candidate) and len(candidate) > 1:
+                            student_name = candidate
+                            break
+                else:
+                    student_name = "UNKNOWN"
             else:
-                # Fallback: line after "Roll No"
-                lines = block.split('\n')
-                name = ""
-                for idx, line in enumerate(lines):
-                    if 'Roll No' in line and idx+1 < len(lines):
-                        name = lines[idx+1].strip()
-                        break
-                student_name = name if name else "UNKNOWN"
+                student_name = "UNKNOWN"
+        else:
+            # Fallback: if no registration number, try to find name near the roll number
+            # Look for capitalized words after roll number line
+            lines = (header + "\n" + body).split('\n')
+            roll_line_idx = None
+            for idx, line in enumerate(lines):
+                if roll_pattern.search(line):
+                    roll_line_idx = idx
+                    break
+            if roll_line_idx is not None and roll_line_idx + 1 < len(lines):
+                student_name = lines[roll_line_idx + 1].strip()
+            else:
+                student_name = "UNKNOWN"
 
-            paper_ids = paper_id_pattern.findall(block)
-            paper_ids = list(dict.fromkeys(paper_ids))
+        # Clean student name (remove any extra spaces or stray characters)
+        student_name = re.sub(r'\s+', ' ', student_name).strip()
 
-            if roll_no and paper_ids:
-                students.append({
-                    'roll_no': roll_no,
-                    'student_name': student_name,
-                    'paper_ids': paper_ids
-                })
+        # Extract all paper IDs from the entire block (header+body)
+        block_text = header + "\n" + body
+        paper_ids = paper_id_pattern.findall(block_text)
+        paper_ids = list(dict.fromkeys(paper_ids))   # unique, keep order
 
-    # If still no students, try brute force: find all roll numbers and collect nearby paper IDs
-    if not students:
-        st.warning("Still no students – attempting brute force extraction.")
-        # Find all roll numbers
-        roll_matches = list(roll_pattern.finditer(full_text))
-        for i, match in enumerate(roll_matches):
-            roll_no = match.group(1)
-            # Get a window of text around the roll number (e.g., 2000 chars before and after)
-            start = max(0, match.start() - 1000)
-            end = min(len(full_text), match.end() + 1000)
-            context = full_text[start:end]
-            paper_ids = paper_id_pattern.findall(context)
-            paper_ids = list(dict.fromkeys(paper_ids))
-            if paper_ids:
-                # Try to find a name near the roll number
-                # Look for a capitalized word before the roll number
-                name_match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)', context[:match.start()-start])
-                student_name = name_match.group(1) if name_match else "UNKNOWN"
-                students.append({
-                    'roll_no': roll_no,
-                    'student_name': student_name,
-                    'paper_ids': paper_ids
-                })
+        if roll_no and paper_ids:
+            students.append({
+                'roll_no': roll_no,
+                'student_name': student_name,
+                'paper_ids': paper_ids
+            })
 
     return students
 
@@ -215,15 +185,13 @@ with col1:
 with col2:
     roll_file = st.file_uploader("🧑‍🎓 Roll List PDF", type="pdf", key="roll")
 
-force_text = st.checkbox("🔧 Force pure text mode (disable table extraction)")
-
 if date_file and roll_file:
     with st.spinner("🔍 Parsing PDFs..."):
         exam_map = parse_date_sheet(date_file)
-        students = parse_roll_list(roll_file, force_text=force_text)
+        students = parse_roll_list(roll_file)
         df = build_schedule(exam_map, students)
 
-    # ---------- Debug: show raw text snippets ----------
+    # Debug: show raw text snippets
     with st.expander("📄 Raw text from Date Sheet (first 1000 chars)"):
         with pdfplumber.open(date_file) as pdf:
             raw = "".join([p.extract_text() or "" for p in pdf.pages])[:1000]
@@ -239,14 +207,16 @@ if date_file and roll_file:
             st.write(f"Found {len(exam_map)} paper entries. Sample:")
             st.json({k: exam_map[k] for k in list(exam_map)[:5]})
         else:
-            st.error("No paper IDs found in date sheet. Check the raw text above.")
+            st.error("No paper IDs found in date sheet. Check raw text above.")
 
-    with st.expander("🧑‍🎓 Extracted students"):
+    with st.expander("🧑‍🎓 Extracted students (first 10)"):
         if students:
             st.write(f"Found {len(students)} students. Sample:")
-            st.json(students[:3])
+            # Show only roll and name for clarity
+            sample = [{'roll_no': s['roll_no'], 'student_name': s['student_name'], 'paper_ids_count': len(s['paper_ids'])} for s in students[:10]]
+            st.json(sample)
         else:
-            st.error("No students found in roll list. Check the raw text above and try the 'Force text mode' option.")
+            st.error("No students found in roll list. Check raw text above.")
 
     if not df.empty:
         st.success(f"✅ Generated {len(df)} schedule rows for {df['Roll No'].nunique()} students.")
@@ -261,4 +231,4 @@ if date_file and roll_file:
                            file_name="exam_schedule.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     else:
-        st.error("❌ No data could be extracted. Please check the raw text above and ensure the PDFs are text-based (not scanned).")
+        st.error("❌ No data could be extracted. Please check the debug info above.")
