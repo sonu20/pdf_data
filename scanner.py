@@ -215,12 +215,10 @@ with col1:
 with col2:
     roll_file = st.file_uploader("🧑‍🎓 Roll List PDF", type="pdf", key="roll")
 
-force_text = st.checkbox("🔧 Force pure text mode (disable table extraction)")
-
 if date_file and roll_file:
     with st.spinner("🔍 Parsing PDFs..."):
         exam_map = parse_date_sheet(date_file)
-        students = parse_roll_list(roll_file, force_text=force_text)
+        students = parse_roll_list(roll_file)
         df = build_schedule(exam_map, students)
 
     # ---------- Debug: show raw text snippets ----------
